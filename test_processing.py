@@ -11,9 +11,15 @@ from processing.planck import planck
 from processing.v_crop_cube import v_crop_cube
 from processing.rad_to_rayleigh import rad_to_rayleigh
 from processing.emission_angle_correction import (
-    correct_1_27, correct_1_74, correct_2_3, correct_3_8, correct_5_0,
+    correct_general, correct_1_27, correct_1_31,
+    correct_1_74, correct_2_3, correct_3_8, correct_5_0,
 )
 from processing.interpintegrate import interp_integrate
+from processing.incidence_angle_correction import (
+    correct_incidence, ia_corr, correct_ia_ea,
+)
+from processing.phase_angle_correction import correct_phase_angle
+from processing.filters import amedian, hv_filter
 
 CAL = Path('test_data/cubes/VIR0093/CALIBRATED/VI0093_00.CAL')
 GEO = Path('test_data/cubes/VIR0093/GEOMETRY/VI0093_00.GEO')
@@ -134,6 +140,28 @@ def test_emission_angle_corrections():
           f'correct_5_0:  value at [0,0,0]  [got {float(c50[0,0,0]):.6f}, '
           f'expected {expected:.6f}]')
 
+    # ── 1.31 µm: R * cos(θ) / (0.31 + 0.69*cos(θ)) ─────────────────────────
+    c131 = correct_1_31(cube, ema)
+    expected = cos_val / (0.31 + 0.69 * cos_val)
+    check(abs(float(c131[0, 0, 0]) - expected) < 1e-10,
+          f'correct_1_31: value at [0,0,0]  [got {float(c131[0,0,0]):.6f}, '
+          f'expected {expected:.6f}]')
+    check(c131.shape == cube.shape, f'correct_1_31: shape preserved')
+
+    # ── general: R / cos(θ) * cos(min_θ per scan line) ───────────────────
+    c_gen = correct_general(cube, ema)
+    min_ema_line0 = float(np.nanmin(np.radians(ema[:, 0])))
+    cos_min_0 = float(np.cos(min_ema_line0))
+    expected_gen = (1.0 / cos_val) * cos_min_0
+    check(abs(float(c_gen[0, 0, 0]) - expected_gen) < 1e-10,
+          f'correct_general: value at [0,0,0]  [got {float(c_gen[0,0,0]):.6f}, '
+          f'expected {expected_gen:.6f}]')
+    check(c_gen.shape == cube.shape, 'correct_general: shape preserved')
+    # pixel at the per-line minimum ema should equal cos_min/cos_min = 1.0
+    min_s = int(np.nanargmin(ema[:, 0]))
+    check(np.allclose(c_gen[:, min_s, 0], 1.0, atol=1e-10),
+          'correct_general: pixel at min-ema of line 0 equals 1.0')
+
     # All corrections should leave ema=0 unchanged (cos=1 → identity at 1.27µm → not 1)
     # but for ema=0 the 2.3µm correction = 1/(0.232+0.768) = 1.0 exactly
     cube_zero = np.ones((3, 10, 10))
@@ -188,10 +216,114 @@ def test_interp_integrate():
           'ind1/ind2 subset: values match full call subset')
 
 
+# ── incidence_angle_correction ────────────────────────────────────────────────
+def test_incidence_angle_correction():
+    print('\n=== incidence_angle_correction ===')
+    cal = virtispds(CAL)
+    geo = virtispds(GEO)
+    cube = cal['qube'].astype(np.float64)   # (432, 256, 289)
+    ema  = geo['qube'][27] * geo['qube_coeff'][27]
+    inc  = geo['qube'][26] * geo['qube_coeff'][26]
+
+    # ── correct_incidence: min of samples 8–30 per (band, line) → 0 ──────
+    import warnings
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore', RuntimeWarning)
+        corrected = correct_incidence(cube)
+        ref_min   = np.nanmin(corrected[:, 8:31, :], axis=1)   # (nb, nl); NaN where all-NaN slice
+    check(corrected.shape == cube.shape, 'correct_incidence: shape preserved')
+    check(corrected.dtype == np.float64,  'correct_incidence: dtype float64')
+    finite_ref = ref_min[np.isfinite(ref_min)]
+    check(len(finite_ref) > 0 and np.all(finite_ref <= 1e-12),
+          'correct_incidence: min(samples 8–30) ≤ 0 for all finite (band,line) slices')
+
+    # ── ia_corr: single-band, shape (samples, lines) ──────────────────────
+    result = ia_corr(cal, geo, band=291)
+    check(result.shape == (cube.shape[1], cube.shape[2]),
+          f'ia_corr: shape == (256, 289)  [got {result.shape}]')
+    check(result.dtype == np.float64, 'ia_corr: dtype float64')
+
+    # ── correct_ia_ea: formula check at a known valid pixel (s=66, l=101) ──
+    S, L = 66, 101
+    c_ia_ea = correct_ia_ea(cube, inc, ema)
+    check(c_ia_ea.shape == cube.shape, 'correct_ia_ea: shape preserved')
+    cos_ia   = float(np.cos(np.radians(inc[S, L])))
+    cos_ea   = float(np.cos(np.radians(ema[S, L])))
+    expected = float(cube[135, S, L]) / cos_ia / (cos_ea ** 0.25)
+    check(abs(float(c_ia_ea[135, S, L]) - expected) < 1e-10,
+          f'correct_ia_ea: value at [135,{S},{L}]  '
+          f'[got {float(c_ia_ea[135,S,L]):.6f}, expected {expected:.6f}]')
+
+
+# ── phase_angle_correction ────────────────────────────────────────────────────
+def test_phase_angle_correction():
+    print('\n=== phase_angle_correction ===')
+    cal = virtispds(CAL)
+    geo = virtispds(GEO)
+    cube = cal['qube'].astype(np.float64)
+    pa   = geo['qube'][28] * geo['qube_coeff'][28]   # phase angle (samples, lines)
+
+    result = correct_phase_angle(cube, pa)
+    check(result.shape == cube.shape, 'correct_phase_angle: shape preserved')
+    check(result.dtype == np.float64,  'correct_phase_angle: dtype float64')
+
+    S, L = 66, 101
+    sin_pa   = float(np.sin(np.radians(pa[S, L])))
+    expected = float(cube[135, S, L]) / sin_pa
+    check(abs(float(result[135, S, L]) - expected) < 1e-10,
+          f'correct_phase_angle: value at [135,{S},{L}]  '
+          f'[got {float(result[135,S,L]):.6f}, expected {expected:.6f}]')
+
+
+# ── filters ───────────────────────────────────────────────────────────────────
+def test_filters():
+    print('\n=== filters ===')
+
+    # ── amedian: 1-D ──────────────────────────────────────────────────────
+    arr1d = np.array([1., 5., 2., 8., 3., 7., 4.])
+    out1d = amedian(arr1d, 3)
+    check(out1d.shape == arr1d.shape, 'amedian 1-D: shape preserved')
+    check(out1d.dtype == np.float64,   'amedian 1-D: dtype float64')
+    # constant array → unchanged
+    const = np.full(20, 3.0)
+    check(np.allclose(amedian(const, 5), 3.0),
+          'amedian: constant array unchanged')
+
+    # ── amedian: 2-D ──────────────────────────────────────────────────────
+    rng   = np.random.default_rng(0)
+    arr2d = rng.standard_normal((30, 40))
+    out2d = amedian(arr2d, 3)
+    check(out2d.shape == arr2d.shape, 'amedian 2-D: shape preserved')
+    # interior pixels should equal a standard median filter
+    from scipy.ndimage import median_filter
+    ref2d = median_filter(arr2d, size=3, mode='mirror')
+    check(np.allclose(out2d, ref2d),
+          'amedian 2-D: matches scipy median_filter(mode="mirror")')
+
+    # ── hv_filter ─────────────────────────────────────────────────────────
+    # flat (constant) cube → zero gradient → zero output
+    flat = np.ones((5, 20, 20))
+    out_flat = hv_filter(flat)
+    check(out_flat.shape == flat.shape, 'hv_filter: shape preserved')
+    check(out_flat.dtype == np.float64,  'hv_filter: dtype float64')
+    check(np.allclose(out_flat, 0.0),
+          'hv_filter: constant input → zero output')
+
+    # non-constant input → non-trivially different from input
+    cal  = virtispds(CAL)
+    band = cal['qube'][[135]].astype(np.float64)   # (1, 256, 289)
+    out_band = hv_filter(band)
+    check(not np.allclose(out_band, band),
+          'hv_filter: non-constant input produces non-trivial output')
+
+
 if __name__ == '__main__':
     test_planck()
     test_crop_cube()
     test_rad_to_rayleigh()
     test_emission_angle_corrections()
     test_interp_integrate()
+    test_incidence_angle_correction()
+    test_phase_angle_correction()
+    test_filters()
     print()
