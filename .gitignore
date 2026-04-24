@@ -1,0 +1,19 @@
+# Test data (large binary PDS files)
+test_data/
+
+# IDL-era ENVI integration (not being ported)
+ENVI_interface/
+
+# Python cache
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+
+# Conda / virtualenv
+.env
+.venv
+
+# OS
+.DS_Store
+Thumbs.db

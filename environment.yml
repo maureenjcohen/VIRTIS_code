@@ -1,0 +1,16 @@
+name: virtis
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.11
+  - numpy
+  - scipy
+  - matplotlib
+  - astropy
+  - pandas
+  - tqdm
+  - pytest
+  - pip
+  - pip:
+    - pvl
