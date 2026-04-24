@@ -20,6 +20,7 @@ from processing.incidence_angle_correction import (
 )
 from processing.phase_angle_correction import correct_phase_angle
 from processing.filters import amedian, hv_filter
+from processing.time_utils import jul2scet, scet2jul, jul2utc, utc2jul, orbit2mtp
 
 CAL = Path('test_data/cubes/VIR0093/CALIBRATED/VI0093_00.CAL')
 GEO = Path('test_data/cubes/VIR0093/GEOMETRY/VI0093_00.GEO')
@@ -317,6 +318,109 @@ def test_filters():
           'hv_filter: non-constant input produces non-trivial output')
 
 
+# ── time_utils ───────────────────────────────────────────────────────────────
+def test_time_utils():
+    import warnings
+    print('\n=== time_utils ===')
+
+    # ── jul2utc / utc2jul round-trip ──────────────────────────────────────
+    # J2000 epoch: JD 2451545.0 = 2000-01-01T12:00:00.000
+    jd_j2000 = 2451545.0
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        utc = jul2utc(jd_j2000)
+    check(utc.startswith('2000-01-01T12:00:00'),
+          f'jul2utc: J2000 → "2000-01-01T12:00:00..."  [got "{utc}"]')
+
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        jd_rt = utc2jul(utc)
+    check(abs(jd_rt - jd_j2000) < 1e-9,
+          f'utc2jul(jul2utc(J2000)) round-trip  [Δ = {abs(jd_rt - jd_j2000):.2e} days]')
+
+    # utc2jul with trailing Z
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        jd_z = utc2jul('2000-01-01T12:00:00.000Z')
+    check(abs(jd_z - jd_j2000) < 1e-9,
+          'utc2jul: accepts trailing Z')
+
+    # utc2jul with bad string returns 0.0
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        jd_bad = utc2jul('not-a-date')
+    check(jd_bad == 0.0, 'utc2jul: bad string returns 0.0')
+
+    # ── jul2scet / scet2jul round-trip (VEX) ─────────────────────────────
+    # VEX epoch: 2005-03-01T00:00:00 → SCET 0.  Pick a date ~2 years later.
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        jd_test  = utc2jul('2007-05-01T06:30:00.000')
+        scet_str = jul2scet(jd_test, mission='VEX')
+        jd_back  = scet2jul(scet_str, mission='VEX')
+
+    # SCET string should start with "0" (year 2, seconds ~68M)
+    check(scet_str[0].isdigit(),
+          f'jul2scet: returns digit string  [got "{scet_str}"]')
+    # Format: 11 integer digits + '.' + 5 fractional digits
+    parts = scet_str.split('.')
+    check(len(parts) == 2 and len(parts[0]) == 11 and len(parts[1]) == 5,
+          f'jul2scet: OBET format "SSSSSSSSSSS.TTTTT"  [got "{scet_str}"]')
+    # Round-trip within one SCET tick (1/65536 s ≈ 1.8e-10 days)
+    check(abs(jd_back - jd_test) < 2 / 65536 / 86400,
+          f'scet round-trip error  [Δ = {abs(jd_back - jd_test)*86400:.2e} s]')
+
+    # VEX epoch itself → SCET "00000000000.00000"
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        jd_vex_orig = utc2jul('2005-03-01T00:00:00.000')
+        scet_orig   = jul2scet(jd_vex_orig, mission='VEX')
+    check(scet_orig == '00000000000.00000',
+          f'jul2scet: VEX epoch → "00000000000.00000"  [got "{scet_orig}"]')
+
+    # partition keyword prepends "1/"
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        scet_p = jul2scet(jd_vex_orig, mission='VEX', partition=1)
+    check(scet_p.startswith('1/'),
+          f'jul2scet: partition=1 prepends "1/"  [got "{scet_p}"]')
+
+    # scet2jul: partition prefix is stripped
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        jd_p = scet2jul(scet_p, mission='VEX')
+    check(abs(jd_p - jd_vex_orig) < 2 / 65536 / 86400,
+          'scet2jul: partition-prefixed string round-trips correctly')
+
+    # as_string=False returns a float
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        scet_f = jul2scet(jd_vex_orig, as_string=False)
+    check(isinstance(scet_f, float) and scet_f == 0.0,
+          f'jul2scet: as_string=False at epoch → 0.0  [got {scet_f}]')
+
+    # ── orbit2mtp ─────────────────────────────────────────────────────────
+    check(orbit2mtp(0)    == -1, 'orbit2mtp(0) == -1  (VOI)')
+    check(orbit2mtp(5)    == -2, 'orbit2mtp(5) == -2  (VOCP)')
+    check(orbit2mtp(16)   ==  1, 'orbit2mtp(16) == 1  (MTP001, first normal orbit)')
+    check(orbit2mtp(43)   ==  1, 'orbit2mtp(43) == 1  (MTP001, last orbit)')
+    check(orbit2mtp(44)   ==  2, 'orbit2mtp(44) == 2  (MTP002, first orbit)')
+    check(orbit2mtp(93)   ==  3, 'orbit2mtp(93) == 3  (orbit-93 test data)')
+    check(orbit2mtp(9999) == -3, 'orbit2mtp(9999) == -3  (CRUISE)')
+    check(orbit2mtp(-1)   == -4, 'orbit2mtp(-1) == -4  (invalid)')
+
+    check(orbit2mtp(0,    as_string=True) == 'VOI',    'orbit2mtp(0,    str) == "VOI"')
+    check(orbit2mtp(5,    as_string=True) == 'VOCP',   'orbit2mtp(5,    str) == "VOCP"')
+    check(orbit2mtp(16,   as_string=True) == 'MTP001', 'orbit2mtp(16,   str) == "MTP001"')
+    check(orbit2mtp(9999, as_string=True) == 'CRUISE', 'orbit2mtp(9999, str) == "CRUISE"')
+    check(orbit2mtp(-1,   as_string=True) == '',       'orbit2mtp(-1,   str) == ""')
+
+    # array input
+    arr = orbit2mtp(np.array([0, 16, 44, 9999]), as_string=True)
+    check(list(arr) == ['VOI', 'MTP001', 'MTP002', 'CRUISE'],
+          f'orbit2mtp array  [got {list(arr)}]')
+
+
 if __name__ == '__main__':
     test_planck()
     test_crop_cube()
@@ -326,4 +430,5 @@ if __name__ == '__main__':
     test_incidence_angle_correction()
     test_phase_angle_correction()
     test_filters()
+    test_time_utils()
     print()
