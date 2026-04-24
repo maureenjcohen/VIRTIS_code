@@ -19,10 +19,11 @@ from scipy.interpolate import griddata as scipy_griddata
 from processing.v_crop_cube import v_crop_cube
 from processing.emission_angle_correction import (
     correct_general,
-    correct_1_27, correct_1_74, correct_2_3, correct_3_8, correct_5_0,
+    correct_1_27, correct_1_31, correct_1_74, correct_2_3, correct_3_8, correct_5_0,
 )
 from processing.incidence_angle_correction import correct_ia_ea
 from processing.rad_to_rayleigh import rad_to_rayleigh
+from processing.planck import brightness_temperature
 from processing.phase_angle_correction import correct_phase_angle
 from processing.interpintegrate import interp_integrate_cube
 from processing.filters import amedian
@@ -143,6 +144,7 @@ def v_geo_grid(
     max_temperature=999.0,
     # --- corrections (applied in order) ---
     spectral_resamples=None,
+    thermal_brightness=False,
     emission_angle=None,
     post_ema=True,
     index_continuum=None,
@@ -210,6 +212,11 @@ def v_geo_grid(
         Each dict must have 'band_range': (b1, b2) and 'new_x': ndarray.
         Applied to the full cube before band selection.
         Use make_co_resample(wl) / make_h2o_resample(wl) to build entries.
+    thermal_brightness : bool
+        Convert radiance to brightness temperature (K) using the inverse
+        Planck function before averaging/gridding.  When True, `average`
+        is forced to True and continuum subtraction is skipped (matching
+        IDL behaviour).
     emission_angle : str or None
         Emission-angle correction to apply.  One of:
         'general', '1.27', '1.31', '1.74', '2.3', '3.8', '5.0', or None.
@@ -342,6 +349,12 @@ def v_geo_grid(
             sel_wl = wl[iband]
             sel    = rad_to_rayleigh(sel, sel_wl)
 
+        # ── Thermal brightness (inverse Planck) ───────────────────────────────
+        if thermal_brightness:
+            sel_wl = wl[iband]
+            sel    = brightness_temperature(sel, sel_wl)
+            average = True   # IDL forces average when thermal_brightness is set
+
         # ── Median filter per band ────────────────────────────────────────────
         if median_filter:
             for b in range(sel.shape[0]):
@@ -371,7 +384,7 @@ def v_geo_grid(
             radiance = radiance / ratio
 
         # ── Continuum subtraction ─────────────────────────────────────────────
-        if index_continuum is not None:
+        if index_continuum is not None and not thermal_brightness:
             icont     = _rescale_indices(index_continuum, nb)
             cont_sel  = cube[icont].copy()
             if median_filter:
@@ -494,6 +507,7 @@ def _rescale_indices(index, nb):
 _EMA_FUNCS = {
     'general': correct_general,
     '1.27':    correct_1_27,
+    '1.31':    correct_1_31,
     '1.74':    correct_1_74,
     '2.3':     correct_2_3,
     '3.8':     correct_3_8,
@@ -558,6 +572,10 @@ def _bin_average(x_pts, y_pts, z_pts, x_edges, y_edges):
     """
     Bin-average scattered (x, y, z) points onto a regular lat/X grid.
 
+    Points outside [x_edges[0], x_edges[-1]] × [y_edges[0], y_edges[-1]]
+    are silently ignored.  Values exactly on the right boundary are
+    included in the last bin (matching numpy.histogram2d convention).
+
     Returns
     -------
     grid  : (n_lat, n_x) float64, NaN where count == 0
@@ -566,8 +584,13 @@ def _bin_average(x_pts, y_pts, z_pts, x_edges, y_edges):
     nx = len(x_edges) - 1
     ny = len(y_edges) - 1
 
-    xi = np.searchsorted(x_edges[1:-1], x_pts)   # 0 … nx-1
-    yi = np.searchsorted(y_edges[1:-1], y_pts)   # 0 … ny-1
+    # searchsorted(..., side='right') - 1 maps value → bin index 0…nx-1
+    xi = np.searchsorted(x_edges, x_pts, side='right') - 1
+    yi = np.searchsorted(y_edges, y_pts, side='right') - 1
+
+    # Include values exactly on the right boundary in the last bin
+    xi = np.where(x_pts == x_edges[-1], nx - 1, xi)
+    yi = np.where(y_pts == y_edges[-1], ny - 1, yi)
 
     in_bounds = (xi >= 0) & (xi < nx) & (yi >= 0) & (yi < ny)
     xi = xi[in_bounds]
