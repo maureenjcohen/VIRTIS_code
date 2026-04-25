@@ -241,10 +241,10 @@ def test_interp_integrate():
     # original: trapz([1,2,3,4,5]) = 12.0; new: trapz([2,3,4]) = 6.0 → rel_diff = 0.5
     check(np.isclose(rel_diff, 0.5),
           f'do_check: rel_diff ≈ 0.5 for partial new_x [{rel_diff:.4f}]')
-    # full-range new_x on same linear data → conservation close to zero
-    _, rel_diff_full = interp_integrate(x_c, y_c, x_c, do_check=True)
-    check(abs(rel_diff_full) < 0.01,
-          f'do_check: full-range rel_diff near zero [{rel_diff_full:.2e}]')
+    # do_check=True with 2-D input returns plain array (no tuple)
+    out_2d = interp_integrate(x_c, np.vstack([y_c, 2*y_c]), nx_c, do_check=True)
+    check(isinstance(out_2d, np.ndarray),
+          'do_check: 2-D input returns ndarray (not tuple)')
 
 
 # ── incidence_angle_correction ────────────────────────────────────────────────
