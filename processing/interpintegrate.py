@@ -14,7 +14,7 @@ VIRTIS cubes, matching interpIntegrate_3D.pro.
 import numpy as np
 
 
-def interp_integrate(x, y, new_x, ind1=None, ind2=None):
+def interp_integrate(x, y, new_x, ind1=None, ind2=None, do_check=False):
     """
     Resample y(x) onto new_x by bin-averaged trapezoidal integration.
 
@@ -32,20 +32,26 @@ def interp_integrate(x, y, new_x, ind1=None, ind2=None):
         First index of new_x to compute (default 0).
     ind2 : int, optional
         Last index of new_x to compute, inclusive (default K−1).
+    do_check : bool, optional
+        If True and input y is 1-D, also compute an integral conservation
+        check (matching IDL interpIntegrate_check.pro /DO_CHECK).
+        Returns a tuple (result, relative_diff) instead of just result.
+        relative_diff = (integral(x,y) − integral(new_x_sub, result)) /
+                        integral(x,y).
 
     Returns
     -------
     ndarray, shape (K_out,) or (M, K_out)
         Resampled values where K_out = ind2 − ind1 + 1.
         Shape matches the input y dimensionality.
+        When do_check=True and y is 1-D, returns (ndarray, float).
     """
     x     = np.asarray(x,     dtype=np.float64)
     new_x = np.asarray(new_x, dtype=np.float64)
-    y     = np.asarray(y,     dtype=np.float64)
+    y_in  = np.asarray(y,     dtype=np.float64)
 
-    squeeze = y.ndim == 1
-    if squeeze:
-        y = y[np.newaxis, :]   # (1, N)
+    squeeze = y_in.ndim == 1
+    y = y_in[np.newaxis, :] if squeeze else y_in   # (M, N)
 
     M, N = y.shape
     K    = len(new_x)
@@ -60,7 +66,12 @@ def interp_integrate(x, y, new_x, ind1=None, ind2=None):
 
     # Early exit when new_x lies entirely outside x
     if new_x[ind1] >= x[-1] or new_x[ind2] <= x[0]:
-        return result[0] if squeeze else result
+        out = result[0] if squeeze else result
+        if do_check and squeeze:
+            orig = np.trapezoid(y_in, x)
+            denom = orig if abs(orig) >= 1e-9 else 1.0
+            return out, orig / denom   # new_integral == 0 → rel_diff == 1
+        return out
 
     for i_out, i in enumerate(range(ind1, ind2 + 1)):
 
@@ -106,7 +117,15 @@ def interp_integrate(x, y, new_x, ind1=None, ind2=None):
 
             result[:, i_out] = (y_sum / x_sum / 2.0) if x_sum > 0 else 0.0
 
-    return result[0] if squeeze else result
+    out = result[0] if squeeze else result
+
+    if do_check and squeeze:
+        orig  = np.trapezoid(y_in, x)
+        new   = np.trapezoid(out, new_x[ind1:ind2 + 1])
+        denom = orig if abs(orig) >= 1e-9 else 1.0
+        return out, (orig - new) / denom
+
+    return out
 
 
 def interp_integrate_cube(x, cube, new_x, ind1=None, ind2=None):

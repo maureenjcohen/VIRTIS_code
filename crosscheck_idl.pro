@@ -124,6 +124,14 @@ PRO crosscheck_idl
   pv, 'interp_integrate.linear_newx3', out_ii[1]
   pv, 'interp_integrate.linear_newx4', out_ii[2]
 
+  ; Conservation check: original integral(x,y) vs integral(new_x, resampled_y)
+  ; Matches IDL interpIntegrate /DO_CHECK behaviour (interpintegrate_check.pro)
+  orig_int  = INT_TABULATED(x_ii, y_ii)
+  new_int   = INT_TABULATED(new_x_ii, out_ii)
+  denom_int = orig_int
+  IF ABS(denom_int) LT 1e-9 THEN denom_int = 1.0
+  pv, 'interp_check.relative_diff', (orig_int - new_int) / denom_int
+
   ; ── correct_ia_ea ────────────────────────────────────────────────────────────
   ; IDL: incidence_angle_correction_mine, QUBE=cube, IAband=inc (EAband defaults to 0)
   ; formula: R / cos(INC) / cos(0)^0.25 = R / cos(INC)

@@ -118,6 +118,11 @@ p('interp_integrate.linear_newx2', out_ii[0])
 p('interp_integrate.linear_newx3', out_ii[1])
 p('interp_integrate.linear_newx4', out_ii[2])
 
+# Conservation check: original integral(x,y) vs integral(new_x, resampled_y)
+# Matches IDL interpIntegrate /DO_CHECK behaviour (interpintegrate_check.pro)
+_, rel_diff = interp_integrate(x_ii, y_ii, new_x_ii, do_check=True)
+p('interp_check.relative_diff', rel_diff)
+
 # ── correct_ia_ea ─────────────────────────────────────────────────────────────
 # Using ema=0 so Python and IDL results match (see file-level note).
 # IDL: incidence_angle_correction_mine, QUBE=cube, IAband=inc, CORRECTED_QUBE=result, /NO_POPUPS

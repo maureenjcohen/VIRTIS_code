@@ -228,6 +228,24 @@ def test_interp_integrate():
     check(np.allclose(sub, new_x[2:6], atol=1e-9),
           'ind1/ind2 subset: values match full call subset')
 
+    # Test 6: do_check — integral conservation flag (matches IDL interpIntegrate_check.pro)
+    x_c   = np.array([1.0, 2.0, 3.0, 4.0, 5.0])
+    y_c   = x_c.copy()
+    nx_c  = np.array([2.0, 3.0, 4.0])
+    # do_check=True returns (result, rel_diff) for 1-D input
+    out_c, rel_diff = interp_integrate(x_c, y_c, nx_c, do_check=True)
+    check(np.allclose(out_c, interp_integrate(x_c, y_c, nx_c)),
+          'do_check: result array unchanged vs normal call')
+    check(np.isfinite(rel_diff),
+          f'do_check: rel_diff is finite [{rel_diff}]')
+    # original: trapz([1,2,3,4,5]) = 12.0; new: trapz([2,3,4]) = 6.0 → rel_diff = 0.5
+    check(np.isclose(rel_diff, 0.5),
+          f'do_check: rel_diff ≈ 0.5 for partial new_x [{rel_diff:.4f}]')
+    # full-range new_x on same linear data → conservation close to zero
+    _, rel_diff_full = interp_integrate(x_c, y_c, x_c, do_check=True)
+    check(abs(rel_diff_full) < 0.01,
+          f'do_check: full-range rel_diff near zero [{rel_diff_full:.2e}]')
+
 
 # ── incidence_angle_correction ────────────────────────────────────────────────
 def test_incidence_angle_correction():
