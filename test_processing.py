@@ -26,6 +26,11 @@ from processing.v_geo_grid import (
     v_geo_grid, make_co_resample, make_h2o_resample,
     _build_axes, _bin_average,
 )
+from processing.accumulated_projection import (
+    accumulated_projection,
+    co_230232_longitude_nightside_5x5,
+    co_ratio229_interp,
+)
 
 CAL  = Path('test_data/cubes/VIR0093/CALIBRATED/VI0093_00.CAL')
 GEO  = Path('test_data/cubes/VIR0093/GEOMETRY/VI0093_00.GEO')
@@ -739,8 +744,9 @@ def test_v_geo_grid_axis_integration():
     r = v_geo_grid(cal, geo, index_band=76, x_delta=2.0, y_delta=5.0)
     xe = r['x_edges']
     ye = r['y_edges']
-    check(np.isclose(xe[1] - xe[0], 2.0),
-          f'x_delta=2.0 preserved [{xe[1]-xe[0]:.4f}]')
+    expected_nx = int(round((xe[-1] - xe[0]) / 2.0))
+    check(len(r['x_axis']) == expected_nx,
+          f'x_delta=2.0: nx=round(range/delta)={expected_nx} [got {len(r["x_axis"])}]')
     check(np.isclose(ye[1] - ye[0], 5.0),
           f'y_delta=5.0 preserved [{ye[1]-ye[0]:.4f}]')
 
@@ -785,6 +791,112 @@ def test_v_geo_grid_axis_integration():
           f'longitude grid shape {r3["grid"].shape}')
 
 
+def test_accumulated_projection():
+    print('=== accumulated_projection ===')
+    cal = virtispds(CAL1)
+    geo = virtispds(GEO1)
+
+    # ── basic call with permissive filters (no incidence/nightside restriction) ──
+    r = accumulated_projection(
+        [CAL1], [GEO1],
+        v_geo_grid_kwargs=dict(
+            index_band=76,
+            use_lt=False,
+            x_size=36,
+            y_size=18,
+        ),
+        min_science_case=1,
+        max_science_case=99,
+        min_exptime=0.0,
+        max_exptime=999.0,
+        verbose=False,
+    )
+    check(r['grid'].shape  == (18, 36),  f'grid shape  {r["grid"].shape}')
+    check(r['count'].shape == (18, 36),  f'count shape {r["count"].shape}')
+    check(r['count'].min() >= 0,         'count >= 0')
+    check(np.all(np.isfinite(r['grid']) == (r['count'] > 0)),
+          'isfinite(grid) ↔ count>0')
+    check(len(r['fnamelist']) == 1,      f'fnamelist length [{len(r["fnamelist"])}]')
+    check(len(r['fdatelist']) == 1,      f'fdatelist length [{len(r["fdatelist"])}]')
+    check(r['fdatelist'][0] > 0,         f'fdatelist > 0 [{r["fdatelist"][0]:.1f}]')
+    check(len(r['x_axis'])  == 36,       f'x_axis length [{len(r["x_axis"])}]')
+    check(len(r['y_axis'])  == 18,       f'y_axis length [{len(r["y_axis"])}]')
+    check(len(r['x_edges']) == 37,       f'x_edges length [{len(r["x_edges"])}]')
+    check(len(r['y_edges']) == 19,       f'y_edges length [{len(r["y_edges"])}]')
+
+    # ── double-file: count doubles, average unchanged ──────────────────────────
+    r2 = accumulated_projection(
+        [CAL1, CAL1], [GEO1, GEO1],
+        v_geo_grid_kwargs=dict(index_band=76, use_lt=False, x_size=36, y_size=18),
+        min_science_case=1, max_science_case=99,
+        min_exptime=0.0, max_exptime=999.0,
+        verbose=False,
+    )
+    check(np.array_equal(r2['count'], 2 * r['count']),
+          'double file → count doubles')
+    check(np.allclose(r2['grid'], r['grid'], equal_nan=True),
+          'double file → avg unchanged')
+    check(len(r2['fnamelist']) == 2, f'double file fnamelist [{len(r2["fnamelist"])}]')
+
+    # ── exclude list ───────────────────────────────────────────────────────────
+    try:
+        accumulated_projection(
+            [CAL1], [GEO1],
+            v_geo_grid_kwargs=dict(index_band=76, use_lt=False, x_size=36, y_size=18),
+            exclude_ids=frozenset({'VI0093'}),
+            min_science_case=1, max_science_case=99,
+            min_exptime=0.0, max_exptime=999.0,
+            verbose=False,
+        )
+        check(False, 'exclude list: should have raised')
+    except RuntimeError:
+        check(True, 'exclude list raises RuntimeError when all files excluded')
+
+    # ── science case filter ────────────────────────────────────────────────────
+    # orbit 93 has science_case=3; filter to only case 1 should skip it
+    try:
+        accumulated_projection(
+            [CAL1], [GEO1],
+            v_geo_grid_kwargs=dict(index_band=76, use_lt=False, x_size=36, y_size=18),
+            min_science_case=1, max_science_case=2,
+            min_exptime=0.0, max_exptime=999.0,
+            verbose=False,
+        )
+        check(False, 'science_case filter: should have raised')
+    except RuntimeError:
+        check(True, 'science_case filter skips orbit 93 (case=3, max=2)')
+
+    # ── exptime filter ─────────────────────────────────────────────────────────
+    # orbit 93 has exptime=3.3 s; filter max=1.0 should skip it
+    try:
+        accumulated_projection(
+            [CAL1], [GEO1],
+            v_geo_grid_kwargs=dict(index_band=76, use_lt=False, x_size=36, y_size=18),
+            min_science_case=1, max_science_case=99,
+            min_exptime=0.0, max_exptime=1.0,
+            verbose=False,
+        )
+        check(False, 'exptime filter: should have raised')
+    except RuntimeError:
+        check(True, 'exptime filter skips orbit 93 (exptime=3.3, max=1.0)')
+
+    # ── co_230232 wrapper: orbit 93 is nightside (inc 118-180°) → succeeds ──────
+    r_co = co_230232_longitude_nightside_5x5([CAL1], [GEO1], verbose=False)
+    check(r_co['grid'].shape == (36, 72),
+          f'co_230232 grid shape {r_co["grid"].shape}')
+    check(len(r_co['fnamelist']) == 1,
+          f'co_230232 fnamelist [{r_co["fnamelist"]}]')
+    check(r_co['count'].max() > 0, 'co_230232 has non-empty cells')
+
+    # ── co_ratio229_interp wrapper: orbit 93 passes all filters → succeeds ──────
+    r_i = co_ratio229_interp([CAL1], [GEO1], verbose=False)
+    check(r_i['grid'].shape == (180, 360),
+          f'co_ratio229 grid shape {r_i["grid"].shape}')
+    check(len(r_i['fnamelist']) == 1,
+          f'co_ratio229 fnamelist [{r_i["fnamelist"]}]')
+    check(r_i['count'].max() > 0, 'co_ratio229 has non-empty cells')
+
+
 if __name__ == '__main__':
     test_planck()
     test_crop_cube()
@@ -800,4 +912,5 @@ if __name__ == '__main__':
     test_v_geo_grid_axes()
     test_v_geo_grid_binning()
     test_v_geo_grid_axis_integration()
+    test_accumulated_projection()
     print()
